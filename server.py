@@ -43,7 +43,7 @@ index = None
 id_map = []  # index->userid
 face_db = {}
 
-# Pydantic for JSON payloads
+# Payload models
 class RecognizePayload(BaseModel):
     url: str = None
     image: str = None  # base64
@@ -52,6 +52,11 @@ class RecognizePayload(BaseModel):
 class MatchPayload(BaseModel):
     image1: str = None
     image2: str = None
+
+class DetectPayload(BaseModel):
+    url: str = None
+    image: str = None  # base64
+    min_confidence: float = None
 
 # Init model
 async def init_model():
@@ -90,11 +95,12 @@ async def refresh_idle_timer(req, call_next):
     unload_task = asyncio.create_task(idle_unload())
     return await call_next(req)
 
-# Auth
-def verify_key(key: str = Header(...)):
-    if key != API_KEY:
+# Auth: accept header 'key' or 'api-key'
+def verify_key(key: str = Header(None), api_key: str = Header(None, alias="api-key")):
+    token = key or api_key
+    if token != API_KEY:
         raise HTTPException(401, "Unauthorized")
-    return key
+    return token
 
 # DB persistence
 def load_db():
@@ -107,7 +113,7 @@ def load_db():
 def save_db():
     with open(DB_FILE,'w') as f: json.dump(face_db,f)
 
-# FAISS
+# FAISS index
 def build_index():
     global index, id_map
     vecs=[]; id_map=[]
@@ -115,68 +121,71 @@ def build_index():
         for v in vs:
             vecs.append(v); id_map.append(user)
     if vecs:
-        mat=np.array(vecs).astype('float32')
+        mat = np.array(vecs).astype('float32')
         faiss.normalize_L2(mat)
-        index=faiss.IndexFlatIP(mat.shape[1]); index.add(mat)
+        index = faiss.IndexFlatIP(mat.shape[1]); index.add(mat)
     else:
-        index=None
+        index = None
 
-# Utility to load image bytes
+# Utility to load image bytes from file, url, or base64
 def extract_image_bytes(file: UploadFile = None, b64: str = None, url: str = None):
     if url:
         resp = requests.get(url)
-        if resp.status_code!=200: raise HTTPException(400,"URL fetch failed")
-        data=resp.content
+        if resp.status_code != 200: raise HTTPException(400, "URL fetch failed")
+        data = resp.content
     elif b64:
-        try: data=base64.b64decode(b64)
-        except: raise HTTPException(400,"Invalid base64")
+        try: data = base64.b64decode(b64)
+        except: raise HTTPException(400, "Invalid base64")
     elif file:
         data = file.file.read()
     else:
-        raise HTTPException(400,"No image provided")
+        raise HTTPException(400, "No image provided")
     try:
-        im=Image.open(BytesIO(data))
+        im = Image.open(BytesIO(data))
         if getattr(im,'is_animated',False): im.seek(0)
-        arr=np.array(im.convert('RGB'))
-        img=cv2.cvtColor(arr,cv2.COLOR_RGB2BGR)
+        arr = np.array(im.convert('RGB'))
+        img = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
     except:
-        raise HTTPException(400,"Invalid image format")
-    h,w=img.shape[:2]
-    if w>10000 or h>10000: raise HTTPException(400,"Image too large")
+        raise HTTPException(400, "Invalid image format")
+    h,w = img.shape[:2]
+    if w>10000 or h>10000: raise HTTPException(400, "Image too large")
     return img
 
-# DeepStack endpoints
+# DeepStack-compatible endpoints
 @app.get("/v1/vision/face/recognize")
 @app.post("/v1/vision/face/recognize")
 async def recognize(key: str = Depends(verify_key),
-                    file: UploadFile = File(None),
+                    image: UploadFile = File(None),
                     payload: RecognizePayload = Body(None)):
     await init_model()
     url = payload.url if payload else None
     b64 = payload.image if payload else None
     min_conf = payload.min_confidence if payload else None
-    img = extract_image_bytes(file,b64,url)
+    img = extract_image_bytes(image if image else None, b64, url)
     faces = face_model.get(img)
-    preds=[]
+    preds = []
     for f in faces:
-        c=float(f.det_score)
-        if min_conf and c<min_conf: continue
-        emb=f.normed_embedding.astype('float32'); faiss.normalize_L2(emb.reshape(1,-1))
+        c = float(f.det_score)
+        if min_conf and c < min_conf: continue
+        emb = f.normed_embedding.astype('float32')
+        faiss.normalize_L2(emb.reshape(1,-1))
         if index:
-            D,I=index.search(emb.reshape(1,-1),1)
-            sim=float(D[0][0]); uid=id_map[I[0][0]] if sim>=MATCH_THRESH else "unknown"
+            D,I = index.search(emb.reshape(1,-1),1)
+            sim = float(D[0][0]); uid = id_map[I[0][0]] if sim>=MATCH_THRESH else "unknown"
         else: sim=0.0; uid="unknown"
-        x1,y1,x2,y2=map(int,f.bbox)
+        x1,y1,x2,y2 = map(int,f.bbox)
         preds.append({"x_min":x1,"y_min":y1,"x_max":x2,"y_max":y2,"confidence":c,"userid":uid})
     return {"success":True,"predictions":preds}
 
 @app.post("/v1/vision/face/register")
-async def register(key: str = Depends(verify_key), image: UploadFile = File(...), userid: str = Form(...)):
+async def register(key: str = Depends(verify_key),
+                   image: UploadFile = File(...),
+                   userid: str = Form(...)):
     await init_model()
-    img=extract_image_bytes(image,None,None)
-    faces=face_model.get(img)
+    img = extract_image_bytes(image,None,None)
+    faces = face_model.get(img)
     if not faces: return {"success":False,"error":"No face detected"}
-    vecs=[f.normed_embedding.tolist() for f in faces]
+    vecs = [f.normed_embedding.tolist() for f in faces]
     face_db.setdefault(userid,[]).extend(vecs); save_db(); build_index()
     return {"success":True}
 
@@ -191,17 +200,41 @@ async def delete_face(key: str = Depends(verify_key), userid: str = Form(...)):
     return {"success":False,"error":"userid not found"}
 
 @app.post("/v1/vision/face/match")
-async def match(key: str = Depends(verify_key), file1: UploadFile = File(None), file2: UploadFile = File(None), payload: MatchPayload = Body(None)):
+async def match(key: str = Depends(verify_key),
+                image1: UploadFile = File(None),
+                image2: UploadFile = File(None),
+                payload: MatchPayload = Body(None)):
     await init_model()
     if payload and payload.image1 and payload.image2:
-        img1=extract_image_bytes(None,payload.image1,None); img2=extract_image_bytes(None,payload.image2,None)
+        img1 = extract_image_bytes(None,payload.image1,None)
+        img2 = extract_image_bytes(None,payload.image2,None)
     else:
-        img1=extract_image_bytes(file1,None,None); img2=extract_image_bytes(file2,None,None)
-    f1=face_model.get(img1); f2=face_model.get(img2)
-    if not f1 or not f2: raise HTTPException(400,"No face detected")
-    e1,e2=f1[0].normed_embedding,f2[0].normed_embedding
-    sim=float(np.dot(e1,e2)/(np.linalg.norm(e1)*np.linalg.norm(e2)))
+        img1 = extract_image_bytes(image1,None,None)
+        img2 = extract_image_bytes(image2,None,None)
+    f1 = face_model.get(img1); f2 = face_model.get(img2)
+    if not f1 or not f2: raise HTTPException(400, "No face detected")
+    e1,e2 = f1[0].normed_embedding, f2[0].normed_embedding
+    sim = float(np.dot(e1,e2)/(np.linalg.norm(e1)*np.linalg.norm(e2)))
     return {"success":True,"similarity":sim}
+
+# Object detection endpoint for agentdvr
+@app.post("/v1/vision/detection")
+async def detection(key: str = Depends(verify_key),
+                    image: UploadFile = File(None),
+                    payload: DetectPayload = Body(None)):
+    await init_model()
+    url = payload.url if payload else None
+    b64 = payload.image if payload else None
+    min_conf = payload.min_confidence if payload else None
+    img = extract_image_bytes(image if image else None, b64, url)
+    faces = face_model.get(img)
+    preds = []
+    for f in faces:
+        c = float(f.det_score)
+        if min_conf and c < min_conf: continue
+        x1,y1,x2,y2 = map(int,f.bbox)
+        preds.append({"x_min":x1,"y_min":y1,"x_max":x2,"y_max":y2,"confidence":c,"label":"person"})
+    return {"success":True,"predictions":preds}
 
 @app.post("/restart")
 async def restart(key: str = Depends(verify_key)):
