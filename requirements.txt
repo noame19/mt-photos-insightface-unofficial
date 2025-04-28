@@ -6,3 +6,6 @@ python-dotenv
 uvicorn
 onnxruntime
 python-multipart
+openvino
+openvino-dev
+onnxruntime-openvino

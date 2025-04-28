@@ -25,7 +25,7 @@ app = FastAPI()
 # Config
 API_KEY = os.getenv("API_AUTH_KEY", "mt_photos_ai_extra")
 PORT = int(os.getenv("HTTP_PORT", 17866))
-BACKEND = os.getenv("DETECTOR_BACKEND", "insightface")
+BACKEND = os.getenv("DETECTOR_BACKEND", "onnx")
 MODEL = os.getenv("RECOGNITION_MODEL", "buffalo_l")
 THRESH = float(os.getenv("DETECTION_THRESH", 0.65))
 LOAD_DELAY = int(os.getenv("MODEL_LOAD_DELAY", 60))
@@ -33,9 +33,11 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", 1200))
 MATCH_THRESH = float(os.getenv("MATCH_THRESHOLD", 0.65))
 DB_FILE = os.getenv("FACE_DB_FILE", "face_db.json")
 
-# Model storage
-storage.BASE_REPO_URL = 'https://github.com/kqstone/mt-photos-insightface-unofficial/releases/download/models'
-
+storage.BASE_REPO_URL = os.getenv(
+    "MODEL_BASE_URL",
+    "https://ghproxy.com/https://github.com/kqstone/"
+    "mt-photos-insightface-unofficial/releases/download/models"
+)
 # Globals
 face_model = None
 unload_task = None
@@ -58,13 +60,17 @@ class DetectPayload(BaseModel):
     image: str = None  # base64
     min_confidence: float = None
 
-# Init model
 async def init_model():
     global face_model
     if face_model is None:
-        providers = ['CPUExecutionProvider'] if BACKEND in ('onnx','cpu') else ['CUDAExecutionProvider','CPUExecutionProvider']
+        if BACKEND in ('onnx','cpu'):
+            providers = ['OpenVINOExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         logging.info(f"Loading {MODEL} with {providers}")
-        fa = FaceAnalysis(providers=providers, allowed_modules=['detection','recognition'], name=MODEL)
+        fa = FaceAnalysis(providers=providers,
+                         allowed_modules=['detection','recognition'],
+                         name=MODEL)
         fa.prepare(ctx_id=0, det_thresh=THRESH, det_size=(640,640))
         face_model = fa
 
@@ -94,29 +100,6 @@ async def refresh_idle_timer(req, call_next):
     if unload_task: unload_task.cancel()
     unload_task = asyncio.create_task(idle_unload())
     return await call_next(req)
-
-# Auth: 兼容多种传参方式（Authorization 头、api-key 头、key 查询参数）
-async def verify_key(request: Request):
-    token = None
-
-    # 1) 优先尝试从 Authorization 头里取值，兼容 "Bearer <token>" 或 "<token>"
-    auth = request.headers.get("authorization")
-    if auth:
-        token = auth.strip().split()[-1]
-
-    # 2) 如果还没取到，尝试检查标准的 api-key 或 key 头（中横线形式）
-    if not token:
-        token = request.headers.get("api-key") or request.headers.get("key")
-
-    # 3) 最后再尝试从 URL 查询参数里取
-    if not token:
-        qs = request.query_params
-        token = qs.get("api-key") or qs.get("key")
-
-    # 校验
-    if token != API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return token
 
 # DB persistence
 def load_db():
@@ -170,7 +153,7 @@ def extract_image_bytes(file: UploadFile = None, b64: str = None, url: str = Non
 # DeepStack-compatible endpoints
 @app.get("/v1/vision/face/recognize")
 @app.post("/v1/vision/face/recognize")
-async def recognize(key: str = Depends(verify_key),
+async def recognize(
                     image: UploadFile = File(None),
                     payload: RecognizePayload = Body(None)):
     await init_model()
@@ -194,7 +177,7 @@ async def recognize(key: str = Depends(verify_key),
     return {"success":True,"predictions":preds}
 
 @app.post("/v1/vision/face/register")
-async def register(key: str = Depends(verify_key),
+async def register(
                    image: UploadFile = File(...),
                    userid: str = Form(...)):
     await init_model()
@@ -206,17 +189,17 @@ async def register(key: str = Depends(verify_key),
     return {"success":True}
 
 @app.post("/v1/vision/face/list")
-async def list_faces(key: str = Depends(verify_key)):
+async def list_faces():
     return {"success":True,"faces":list(face_db.keys())}
 
 @app.post("/v1/vision/face/delete")
-async def delete_face(key: str = Depends(verify_key), userid: str = Form(...)):
+async def delete_face(userid: str = Form(...)):
     if userid in face_db:
         face_db.pop(userid); save_db(); build_index(); return {"success":True}
     return {"success":False,"error":"userid not found"}
 
 @app.post("/v1/vision/face/match")
-async def match(key: str = Depends(verify_key),
+async def match(
                 image1: UploadFile = File(None),
                 image2: UploadFile = File(None),
                 payload: MatchPayload = Body(None)):
@@ -235,7 +218,7 @@ async def match(key: str = Depends(verify_key),
 
 # Object detection endpoint for agentdvr
 @app.post("/v1/vision/detection")
-async def detection(key: str = Depends(verify_key),
+async def detection(
                     image: UploadFile = File(None),
                     payload: DetectPayload = Body(None)):
     await init_model()
@@ -253,7 +236,7 @@ async def detection(key: str = Depends(verify_key),
     return {"success":True,"predictions":preds}
 
 @app.post("/restart")
-async def restart(key: str = Depends(verify_key)):
+async def restart():
     os.execl(sys.executable, sys.executable, *sys.argv)
 
 if __name__ == "__main__":
