@@ -1,5 +1,8 @@
+faiss
 fastapi
+insightface
+numpy
+Pillow
 python-dotenv
 uvicorn
-insightface
 onnxruntime

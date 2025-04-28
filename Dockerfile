@@ -12,7 +12,8 @@ COPY server.py .
 ENV API_AUTH_KEY=mt_photos_ai_extra
 ENV RECOGNITION_MODEL=buffalo_l
 ENV DETECTION_THRESH=0.65
-EXPOSE 8066
+ENV MATCH_THRESHOLD=0.65
+EXPOSE 17866
 
 VOLUME ["/root/.insightface/models"]
 
