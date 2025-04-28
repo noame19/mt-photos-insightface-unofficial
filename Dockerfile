@@ -12,6 +12,8 @@ RUN pip3 install --no-cache-dir -r requirements.txt --index-url=https://pypi.tun
 
 # 单独安装 faiss-cpu 或 faiss-gpu
 RUN pip3 install faiss-cpu --index-url=https://pypi.tuna.tsinghua.edu.cn/simple/
+# 单独安装 faiss-cpu 或 faiss-gpu
+RUN pip3 install faiss-gpu --index-url=https://pypi.tuna.tsinghua.edu.cn/simple/
 
 COPY server.py .
 
