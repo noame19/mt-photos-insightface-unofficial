@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from io import BytesIO
-from fastapi import Depends, FastAPI, File, UploadFile, HTTPException, Header, Form, Body, Query
+from fastapi import Depends, FastAPI, File, UploadFile, HTTPException, Header, Form, Body, Query, Request
 from pydantic import BaseModel
 import uvicorn
 from insightface.utils import storage
@@ -95,11 +95,27 @@ async def refresh_idle_timer(req, call_next):
     unload_task = asyncio.create_task(idle_unload())
     return await call_next(req)
 
-# Auth: accept header 'key' or 'api-key'
-def verify_key(key: str = Header(None), api_key: str = Header(None, alias="api-key")):
-    token = key or api_key
+# Auth: 兼容多种传参方式（Authorization 头、api-key 头、key 查询参数）
+async def verify_key(request: Request):
+    token = None
+
+    # 1) 优先尝试从 Authorization 头里取值，兼容 "Bearer <token>" 或 "<token>"
+    auth = request.headers.get("authorization")
+    if auth:
+        token = auth.strip().split()[-1]
+
+    # 2) 如果还没取到，尝试检查标准的 api-key 或 key 头（中横线形式）
+    if not token:
+        token = request.headers.get("api-key") or request.headers.get("key")
+
+    # 3) 最后再尝试从 URL 查询参数里取
+    if not token:
+        qs = request.query_params
+        token = qs.get("api-key") or qs.get("key")
+
+    # 校验
     if token != API_KEY:
-        raise HTTPException(401, "Unauthorized")
+        raise HTTPException(status_code=401, detail="Unauthorized")
     return token
 
 # DB persistence
