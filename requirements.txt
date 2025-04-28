@@ -1,4 +1,3 @@
-faiss
 fastapi
 insightface
 numpy
