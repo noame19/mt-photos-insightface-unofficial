@@ -4,8 +4,14 @@ USER root
 WORKDIR /app
 COPY requirements.txt .
 
+# 先升级 pip
+RUN pip3 install --upgrade pip
+
 # 安装依赖包
 RUN pip3 install --no-cache-dir -r requirements.txt --index-url=https://pypi.tuna.tsinghua.edu.cn/simple/
+
+# 单独安装 faiss-cpu 或 faiss-gpu
+RUN pip3 install faiss-cpu --index-url=https://pypi.tuna.tsinghua.edu.cn/simple/
 
 COPY server.py .
 
