@@ -21,6 +21,8 @@ ENV API_AUTH_KEY=mt_photos_ai_extra
 ENV RECOGNITION_MODEL=buffalo_l
 ENV DETECTION_THRESH=0.65
 ENV MATCH_THRESHOLD=0.65
+ENV FACE_DB_FILE=/app/data/face_db.json
+VOLUME ["/app/data"]
 EXPOSE 17866
 
 VOLUME ["/root/.insightface/models"]
