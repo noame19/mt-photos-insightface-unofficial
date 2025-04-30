@@ -60,18 +60,21 @@ def unload_model():
         del face_model; face_model = None; gc.collect()
 
 async def idle_unload():
-    await asyncio.sleep(IDLE_TIMEOUT); unload_model()
+    try:
+        await asyncio.sleep(IDLE_TIMEOUT)
+        unload_model()
+    except asyncio.CancelledError:
+        logging.info("Idle unload cancelled")
+    except Exception as e:
+        logging.error(f"Error in idle unload: {str(e)}")
 
 @app.middleware("http")
 async def refresh_idle_timer(request, call_next):
     global unload_task
-    if unload_task: unload_task.cancel()
-    unload_task = asyncio.create_task(idle_unload_after_response(call_next, request))
-
-async def idle_unload_after_response(call_next, request):
+    if unload_task: 
+        unload_task.cancel()
     response = await call_next(request)
-    await asyncio.sleep(IDLE_TIMEOUT)
-    unload_model()
+    unload_task = asyncio.create_task(idle_unload())
     return response
 
 async def init_model():
@@ -91,8 +94,19 @@ async def delayed_init(): await asyncio.sleep(LOAD_DELAY); await init_model()
 
 def load_db():
     global face_db
-    if os.path.exists(DB_FILE): face_db = json.load(open(DB_FILE))
-    else: face_db = {}
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    face_db = json.loads(content)
+                else:
+                    face_db = {}
+        except json.JSONDecodeError:
+            # 文件存在但不是有效 JSON（比如刚创建的空文件）
+            face_db = {}
+    else:
+        face_db = {}
 
 def save_db(): json.dump(face_db, open(DB_FILE,'w'))
 
