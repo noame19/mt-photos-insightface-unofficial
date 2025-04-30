@@ -64,7 +64,7 @@ async def idle_unload():
         await asyncio.sleep(IDLE_TIMEOUT)
         unload_model()
     except asyncio.CancelledError:
-        logging.info("Idle unload cancelled")
+        pass
     except Exception as e:
         logging.error(f"Error in idle unload: {str(e)}")
 
@@ -94,21 +94,31 @@ async def delayed_init(): await asyncio.sleep(LOAD_DELAY); await init_model()
 
 def load_db():
     global face_db
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, 'r') as f:
+    try:
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if content:
                     face_db = json.loads(content)
                 else:
                     face_db = {}
-        except json.JSONDecodeError:
-            # 文件存在但不是有效 JSON（比如刚创建的空文件）
+                    logging.warning("face_db.json is empty")
+        else:
             face_db = {}
-    else:
+            logging.warning(f"face_db.json file {DB_FILE} not found")
+    except json.JSONDecodeError as e:
+        logging.error(f"face_db.json file format error: {str(e)}")
+        face_db = {}
+    except Exception as e:
+        logging.error(f"load face_db.json file error: {str(e)}")
         face_db = {}
 
-def save_db(): json.dump(face_db, open(DB_FILE,'w'))
+def save_db():
+    try:
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(face_db, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"save face_db.json file error: {str(e)}")
 
 def build_index():
     global index,id_map
