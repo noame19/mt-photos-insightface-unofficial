@@ -1,5 +1,18 @@
 import logging
-logging.basicConfig(level=logging.INFO)
+import datetime
+import pytz
+import getpass
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+def china_time(*args):
+    return datetime.datetime.now(pytz.timezone('Asia/Shanghai')).timetuple()
+
+logging.Formatter.converter = china_time
 
 from dotenv import load_dotenv
 import os
@@ -31,9 +44,16 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", 1200))
 MATCH_THRESH = float(os.getenv("MATCH_THRESHOLD", 0.65))
 DB_FILE = os.getenv("FACE_DB_FILE", "face_db.json")
 
+# 根据当前用户设置模型路径
+current_user = getpass.getuser()
+if current_user == "root":
+    model_path = os.path.join("/root/.insightface/models", MODEL)
+else:
+    model_path = os.path.join(os.path.expanduser("~"), ".insightface/models", MODEL)
+
 storage.BASE_REPO_URL = os.getenv(
     "MODEL_BASE_URL",
-    "https://ghproxy.com/https://github.com/kqstone/"
+    "https://github.com/kqstone/"
     "mt-photos-insightface-unofficial/releases/download/models"
 )
 
@@ -81,14 +101,23 @@ async def init_model():
     global face_model
     if face_model is None:
         providers = ['OpenVINOExecutionProvider', 'CPUExecutionProvider'] if BACKEND in ('onnx','cpu') else ['CUDAExecutionProvider','CPUExecutionProvider']
-        logging.info(f"Loading {MODEL} with {providers}")
-        fa = FaceAnalysis(
-            providers=providers,
-            allowed_modules=['detection','recognition','genderage'],
-            name=MODEL
-        )
-        fa.prepare(ctx_id=0, det_thresh=THRESH, det_size=(640,640))
-        face_model = fa
+        logging.info(f"progress run in {providers}...")
+        try:
+            fa = FaceAnalysis(
+                providers=providers,
+                allowed_modules=['detection','recognition'],
+                name=MODEL
+            )
+            fa.prepare(ctx_id=0, det_thresh=THRESH, det_size=(640,640))
+            face_model = fa
+            logging.info(f"模型 {MODEL} 加载成功")
+        except Exception as e:
+            logging.error(f"模型加载失败: {str(e)}")
+            logging.error(f"{model_path}模型不存在，请手动下载模型")
+            logging.error(f"地址 https://github.com/kqstone/mt-photos-insightface-unofficial/releases/download/models/{MODEL}.zip")
+            logging.error(f"下载 {MODEL}.zip，解压至{model_path}")
+            logging.error(f"如果是docker容器，则需要映射外部模型路径到 {model_path}")
+            exit(1)
 
 async def delayed_init(): await asyncio.sleep(LOAD_DELAY); await init_model()
 
@@ -165,7 +194,7 @@ async def recognize(image:UploadFile=File(None), payload:RecognizePayload=Body(N
 
     faces=face_model.get(img_cv)
     preds=[]
-    draw=ImageDraw.Draw(im); font=ImageFont.load_default()
+    draw=ImageDraw.Draw(im)
     for f in faces:
         score=float(f.det_score)
         if payload and payload.min_confidence and score<payload.min_confidence: continue
@@ -174,12 +203,8 @@ async def recognize(image:UploadFile=File(None), payload:RecognizePayload=Body(N
             D,I=index.search(emb.reshape(1,-1),1); sim=float(D[0][0]); uid=id_map[I[0][0]] if sim>=MATCH_THRESH else 'unknown'
         else: sim=0.0; uid='unknown'
         x1,y1,x2,y2=map(int,f.bbox)
-        age=int(float(f.age)) if hasattr(f,'age') else None
-        gender=int(f.gender) if hasattr(f,'gender') else None
-        preds.append({'x_min':x1,'y_min':y1,'x_max':x2,'y_max':y2,'confidence':score,'userid':uid,'age':age,'gender':gender})
+        preds.append({'x_min':x1,'y_min':y1,'x_max':x2,'y_max':y2,'confidence':score,'userid':uid})
         draw.rectangle([x1,y1,x2,y2],outline='green',width=2)
-        label=f"{gender},{age}" if age!=None and gender!=None else ''
-        draw.text((x1,y1-10),label,font=font,fill='green')
     result={'success':True,'predictions':preds}
     return result
     
