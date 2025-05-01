@@ -190,6 +190,7 @@ async def recognize(image:UploadFile=File(None), payload:RecognizePayload=Body(N
     data=extract_image_bytes(image if image else None, payload.image if payload else None, payload.url if payload else None)
     im=Image.open(BytesIO(data));
     if getattr(im,'is_animated',False): im.seek(0)
+    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}")
     img_cv=cv2.cvtColor(np.array(im.convert('RGB')),cv2.COLOR_RGB2BGR)
 
     faces=face_model.get(img_cv)
@@ -216,6 +217,7 @@ async def register(
     data = extract_image_bytes(image, None, None)
     im = Image.open(BytesIO(data))
     if getattr(im, 'is_animated', False): im.seek(0)
+    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}")
     img_cv = cv2.cvtColor(np.array(im.convert('RGB')), cv2.COLOR_RGB2BGR)
     faces = face_model.get(img_cv)
     if not faces: return {"success":False,"error":"No face detected"}
