@@ -43,6 +43,7 @@ LOAD_DELAY = int(os.getenv("MODEL_LOAD_DELAY", 60))
 IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", 1200))
 MATCH_THRESH = float(os.getenv("MATCH_THRESHOLD", 0.65))
 DB_FILE = os.getenv("FACE_DB_FILE", "face_db.json")
+INDEX_FILE = os.getenv("FAISS_INDEX_FILE", "face_index.faiss")
 
 # 根据当前用户设置模型路径
 current_user = getpass.getuser()
@@ -71,7 +72,8 @@ class RecognizePayload(BaseModel):
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(delayed_init())
-    load_db(); build_index()
+    load_db()
+    load_index()
 
 def unload_model():
     global face_model
@@ -150,19 +152,49 @@ def save_db():
         logging.error(f"save face_db.json file error: {str(e)}")
 
 def build_index():
-    global index,id_map
-    vecs=[]; id_map=[]
-    for u,vs in face_db.items():
-        for v in vs: vecs.append(v); id_map.append(u)
+    global index, id_map
+    vecs = []; id_map = []
+    for u, vs in face_db.items():
+        for v in vs: 
+            vecs.append(v)
+            id_map.append(u)
+    
     if vecs:
-        mat=np.array(vecs,dtype='float32'); faiss.normalize_L2(mat)
-        index=faiss.IndexFlatIP(mat.shape[1]); index.add(mat)
-    else: index=None
+        mat = np.array(vecs, dtype='float32')
+        faiss.normalize_L2(mat)
+        if index is None:
+            index = faiss.IndexFlatIP(mat.shape[1])
+            index.add(mat)
+        else:
+            # 增量添加新向量
+            index.add(mat)
+        
+        # 保存索引到文件
+        try:
+            faiss.write_index(index, INDEX_FILE)
+            logging.info(f"index file {INDEX_FILE} saved")
+        except Exception as e:
+            logging.error(f"save index file error: {str(e)}")
+    else:
+        index = None
+
+def load_index():
+    global index
+    try:
+        if os.path.exists(INDEX_FILE):
+            index = faiss.read_index(INDEX_FILE)
+            logging.info(f"load index file {INDEX_FILE} success")
+        else:
+            logging.info("index file not found, will build new index")
+            build_index()
+    except Exception as e:
+        logging.error(f"load index file error: {str(e)}")
+        build_index()
 
 def extract_image_bytes(file: UploadFile=None, b64: str=None, url: str=None):
     if url:
         resp=requests.get(url)
-        if resp.status_code!=200: raise HTTPException(400,"URL fetch失败")
+        if resp.status_code!=200: raise HTTPException(400,"URL fetch failed")
         data=resp.content
     elif b64:
         b64=b64.strip().strip('"')
@@ -190,7 +222,7 @@ async def recognize(image:UploadFile=File(None), payload:RecognizePayload=Body(N
     data=extract_image_bytes(image if image else None, payload.image if payload else None, payload.url if payload else None)
     im=Image.open(BytesIO(data));
     if getattr(im,'is_animated',False): im.seek(0)
-    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}")
+    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}, 格式: {im.format}, 模式: {im.mode}")
     img_cv=cv2.cvtColor(np.array(im.convert('RGB')),cv2.COLOR_RGB2BGR)
 
     faces=face_model.get(img_cv)
@@ -210,19 +242,39 @@ async def recognize(image:UploadFile=File(None), payload:RecognizePayload=Body(N
     return result
     
 @app.post("/v1/vision/face/register")
-async def register(
-                   image: UploadFile = File(...),
-                   userid: str = Form(...)):
+async def register(image: UploadFile = File(...), userid: str = Form(...)):
     await init_model()
     data = extract_image_bytes(image, None, None)
     im = Image.open(BytesIO(data))
     if getattr(im, 'is_animated', False): im.seek(0)
-    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}")
+    logging.info(f"处理图片分辨率: {im.size[0]}x{im.size[1]}, 格式: {im.format}, 模式: {im.mode}")
     img_cv = cv2.cvtColor(np.array(im.convert('RGB')), cv2.COLOR_RGB2BGR)
     faces = face_model.get(img_cv)
     if not faces: return {"success":False,"error":"No face detected"}
-    vecs = [f.normed_embedding.tolist() for f in faces]
-    face_db.setdefault(userid,[]).extend(vecs); save_db(); build_index()
+    
+    # 获取新向量
+    new_vecs = [f.normed_embedding.tolist() for f in faces]
+    
+    # 更新数据库
+    face_db.setdefault(userid, []).extend(new_vecs)
+    save_db()
+    
+    # 增量更新索引
+    if index is not None:
+        new_mat = np.array(new_vecs, dtype='float32')
+        faiss.normalize_L2(new_mat)
+        index.add(new_mat)
+        # 更新id_map
+        global id_map
+        id_map.extend([userid] * len(new_vecs))
+        # 保存更新后的索引
+        try:
+            faiss.write_index(index, INDEX_FILE)
+        except Exception as e:
+            logging.error(f"save index file error: {str(e)}")
+    else:
+        build_index()
+    
     return {"success":True}
 
 @app.post("/v1/vision/face/list")

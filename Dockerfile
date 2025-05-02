@@ -22,6 +22,7 @@ ENV RECOGNITION_MODEL=buffalo_l
 ENV DETECTION_THRESH=0.65
 ENV MATCH_THRESHOLD=0.65
 ENV FACE_DB_FILE=/app/data/face_db.json
+ENV FAISS_INDEX_FILE=/app/data/face_index.faiss
 VOLUME ["/app/data"]
 EXPOSE 17866
 
